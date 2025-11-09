@@ -1,4 +1,4 @@
-use argon2::{Argon2, PasswordHasher, PasswordVerifier};
+use argon2::{Argon2, Params, Algorithm, Version, PasswordHasher, PasswordVerifier};
 use argon2::password_hash::{SaltString, PasswordHash, Error as PasswordHashError};
 use rand::rngs::OsRng;
 use std::ffi::{CStr, CString};
@@ -8,13 +8,29 @@ use std::os::raw::{c_char, c_int};
 const MAX_PASSWORD_LEN: usize = 4096;
 const MAX_SALT_LEN: usize = 128;
 
+/// Argon2 limits to avoid DoS or crashes
+const MIN_MEMORY_KIB: u32 = 8 * 1024;       // 8 MB
+const MAX_MEMORY_KIB: u32 = 512 * 1024;     // 512 MB
+const DEFAULT_MEMORY_KIB: u32 = 64 * 1024;  // 64 MB
+
+const MIN_ITERATIONS: u32 = 2;
+const MAX_ITERATIONS: u32 = 30;
+const DEFAULT_ITERATIONS: u32 = 4;
+
+const MIN_LANES: u32 = 1;
+const MAX_LANES: u32 = 64;
+const DEFAULT_LANES: u32 = 2;
+
 /// Result pointer type - either valid CString pointer or null on error
 type HashResult = *mut c_char;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn argon2id_hash(
     password: *const c_char, 
-    salt: *const c_char
+    salt: *const c_char,
+    memory: *const c_int, 
+    iterations: *const c_int,
+    parallelism: *const c_int 
 ) -> HashResult {
     // Input validation
     if password.is_null() || salt.is_null() {
@@ -40,7 +56,27 @@ pub unsafe extern "C" fn argon2id_hash(
         return std::ptr::null_mut();
     }
 
-    let argon2 = Argon2::default();
+    // Default values if caller passes 0 or invalid numbers
+    let memory_kib = if !memory.is_null() && unsafe { *memory } >= 32 * 1024 {
+        unsafe { (*memory as u32).clamp(MIN_MEMORY_KIB, MAX_MEMORY_KIB) }
+    } else {
+        DEFAULT_MEMORY_KIB
+    };
+
+    let time_cost = if !iterations.is_null() && unsafe { *iterations } >= 3 {
+        unsafe { (*iterations as u32).clamp(MIN_ITERATIONS, MAX_ITERATIONS) }
+    } else {
+        DEFAULT_ITERATIONS
+    };
+
+    let lanes = if !parallelism.is_null() && unsafe { *parallelism } >= 1 {
+        unsafe { (*parallelism as u32).clamp(MIN_LANES, MAX_LANES) }
+    } else {
+        DEFAULT_LANES
+    };
+
+    let params = Params::new(memory_kib, time_cost, lanes, None).unwrap();
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     
     // Parse salt - assume it's provided as Base64 string from C side
     let salt = match SaltString::from_b64(salt_str) {
@@ -128,14 +164,17 @@ pub mod android {
     use super::*;
     use jni::JNIEnv;
     use jni::objects::{JClass, JString};
-    use jni::sys::jstring;
+    use jni::sys::{jstring, jint};
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn Java_expo_modules_argon2_Argon2Module_hash(
         mut env: JNIEnv,
         _class: JClass,
         password: JString,
-        salt: JString
+        salt: JString,
+        memory: jint, 
+        iterations: jint,
+        parallelism: jint 
     ) -> jstring {
         // Convert Java strings to Rust strings
         let password_java = match env.get_string(&password) {
@@ -169,7 +208,15 @@ pub mod android {
         };
 
         // Call the hash function
-        let hash_ptr = unsafe { argon2id_hash(password_cstr.as_ptr(), salt_cstr.as_ptr()) };
+        let hash_ptr = unsafe {
+            argon2id_hash(
+                password_cstr.as_ptr(),
+                salt_cstr.as_ptr(),
+                &memory as *const jint as *const c_int,
+                &iterations as *const jint as *const c_int,
+                &parallelism as *const jint as *const c_int
+            )
+        };
         if hash_ptr.is_null() {
             return env.new_string("").expect("Could not create Java string").into_raw();
         }

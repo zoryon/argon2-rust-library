@@ -13,7 +13,11 @@
  */
 typedef char *HashResult;
 
-HashResult argon2id_hash(const char *password, const char *salt);
+HashResult argon2id_hash(const char *password,
+                         const char *salt,
+                         const int *memory,
+                         const int *iterations,
+                         const int *parallelism);
 
 void argon2id_free_hash(char *hash_ptr);
 

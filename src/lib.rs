@@ -131,7 +131,7 @@ pub mod android {
     use jni::sys::jstring;
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn Java_expo_module_argon2_Argon2id_hash(
+    pub unsafe extern "C" fn Java_expo_modules_argon2_Argon2Module_hash(
         mut env: JNIEnv,
         _class: JClass,
         password: JString,
@@ -187,7 +187,7 @@ pub mod android {
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn Java_expo_module_argon2_Argon2id_generateSalt(
+    pub unsafe extern "C" fn Java_expo_modules_argon2_Argon2Module_generateSalt(
         env: JNIEnv,
         _class: JClass,
     ) -> jstring {
@@ -208,7 +208,7 @@ pub mod android {
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn Java_expo_module_argon2_Argon2id_verify(
+    pub unsafe extern "C" fn Java_expo_modules_argon2_Argon2Module_verify(
         mut env: JNIEnv,
         _class: JClass,
         password: JString,

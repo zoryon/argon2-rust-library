@@ -71,8 +71,8 @@ pub unsafe extern "C" fn argon2id_free_hash(hash_ptr: *mut c_char) {
 
 /// Generate a cryptographically secure random salt (Base64 encoded)
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn argon2id_generate_salt() -> *mut c_char {    
-    let mut rng = OsRng; // rand::rngs::OsRng
+pub extern "C" fn argon2id_generate_salt() -> *mut c_char {    
+    let mut rng = OsRng;
     
     let salt = SaltString::generate(&mut rng);
     
@@ -130,9 +130,9 @@ pub mod android {
     use jni::objects::{JClass, JString};
     use jni::sys::jstring;
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn Java_expo_module_argon2_Argon2id_hash(
-        env: JNIEnv,
+        mut env: JNIEnv,
         _class: JClass,
         password: JString,
         salt: JString
@@ -140,69 +140,76 @@ pub mod android {
         // Convert Java strings to Rust strings
         let password_java = match env.get_string(&password) {
             Ok(s) => s,
-            Err(_) => return env.new_string("").unwrap().into_inner(),
+            Err(_) => {
+                // Return empty string on error
+                return env.new_string("").expect("Could not create Java string").into_raw();
+            },
         };
         
         let salt_java = match env.get_string(&salt) {
             Ok(s) => s,
-            Err(_) => return env.new_string("").unwrap().into_inner(),
+            Err(_) => {
+                return env.new_string("").expect("Could not create Java string").into_raw();
+            },
         };
 
         // Convert to C-compatible strings
         let password_cstr = match CString::new(password_java.to_string_lossy().into_owned()) {
             Ok(s) => s,
-            Err(_) => return env.new_string("").unwrap().into_inner(),
+            Err(_) => {
+                return env.new_string("").expect("Could not create Java string").into_raw();
+            },
         };
         
         let salt_cstr = match CString::new(salt_java.to_string_lossy().into_owned()) {
             Ok(s) => s,
-            Err(_) => return env.new_string("").unwrap().into_inner(),
+            Err(_) => {
+                return env.new_string("").expect("Could not create Java string").into_raw();
+            },
         };
 
         // Call the hash function
-        let hash_ptr = argon2id_hash(password_cstr.as_ptr(), salt_cstr.as_ptr());
+        let hash_ptr = unsafe { argon2id_hash(password_cstr.as_ptr(), salt_cstr.as_ptr()) };
         if hash_ptr.is_null() {
-            return env.new_string("").unwrap().into_inner();
+            return env.new_string("").expect("Could not create Java string").into_raw();
         }
 
         // Convert result back to Java string
         let hash_cstr = unsafe { CString::from_raw(hash_ptr) };
         let hash_str = match hash_cstr.into_string() {
             Ok(s) => s,
-            Err(_) => return env.new_string("").unwrap().into_inner(),
+            Err(_) => {
+                return env.new_string("").expect("Could not create Java string").into_raw();
+            },
         };
 
-        match env.new_string(hash_str) {
-            Ok(jstring) => jstring.into_inner(),
-            Err(_) => std::ptr::null_mut(),
-        }
+        env.new_string(hash_str).expect("Could not create Java string").into_raw()
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn Java_expo_module_argon2_Argon2id_generateSalt(
         env: JNIEnv,
         _class: JClass,
     ) -> jstring {
         let salt_ptr = argon2id_generate_salt();
         if salt_ptr.is_null() {
-            return env.new_string("").unwrap().into_inner();
+            return env.new_string("").expect("Could not create Java string").into_raw();
         }
 
         let salt_cstr = unsafe { CString::from_raw(salt_ptr) };
         let salt_str = match salt_cstr.into_string() {
             Ok(s) => s,
-            Err(_) => return env.new_string("").unwrap().into_inner(),
+            Err(_) => {
+                return env.new_string("").expect("Could not create Java string").into_raw();
+            },
         };
 
-        match env.new_string(salt_str) {
-            Ok(jstring) => jstring.into_inner(),
-            Err(_) => std::ptr::null_mut(),
-        }
+        env.new_string(salt_str).expect("Could not create Java string").into_raw()
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn Java_expo_module_argon2_Argon2id_verify(
-        env: JNIEnv,
+        mut env: JNIEnv,
         _class: JClass,
         password: JString,
         hash: JString
@@ -230,7 +237,7 @@ pub mod android {
         };
 
         // Call the verify function
-        let result = argon2id_verify(password_cstr.as_ptr(), hash_cstr.as_ptr());
+        let result = unsafe { argon2id_verify(password_cstr.as_ptr(), hash_cstr.as_ptr()) };
         result
     }
 }

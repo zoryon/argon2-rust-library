@@ -1,5 +1,5 @@
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
-use argon2::password_hash::{SaltString, PasswordHash};
+use argon2::password_hash::{SaltString, PasswordHash, Error as PasswordHashError};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};  
 
@@ -21,15 +21,18 @@ pub unsafe extern "C" fn argon2id_hash(
     }
 
     // Convert C strings to Rust with length limits
-    let password_result = unsafe { CStr::from_ptr(password) }.to_str();
-    let salt_result = unsafe { CStr::from_ptr(salt) }.to_str();
-
-    if password_result.is_err() || salt_result.is_err() {
-        return std::ptr::null_mut();
-    }
-
-    let password_str = password_result.unwrap();
-    let salt_str = salt_result.unwrap();
+    let password_cstr = unsafe { CStr::from_ptr(password) };
+    let salt_cstr = unsafe { CStr::from_ptr(salt) };
+    
+    let password_str = match password_cstr.to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    
+    let salt_str = match salt_cstr.to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
 
     // Validate lengths
     if password_str.len() > MAX_PASSWORD_LEN || salt_str.len() > MAX_SALT_LEN {
@@ -39,27 +42,22 @@ pub unsafe extern "C" fn argon2id_hash(
     let argon2 = Argon2::default();
     
     // Parse salt - assume it's provided as Base64 string from C side
-    let salt_parse_result = SaltString::from_b64(salt_str);
-    if salt_parse_result.is_err() {
-        return std::ptr::null_mut();
-    }
-    let salt = salt_parse_result.unwrap();
+    let salt = match SaltString::from_b64(salt_str) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
     
     // Hash password
-    let hash_result = argon2.hash_password(password_str.as_bytes(), &salt);
-    if hash_result.is_err() {
-        return std::ptr::null_mut();
-    }
-    
-    let hash = hash_result.unwrap();
+    let hash = match argon2.hash_password(password_str.as_bytes(), &salt) {
+        Ok(h) => h,
+        Err(_) => return std::ptr::null_mut(),
+    };
     
     // Convert to CString and return pointer
-    let hash_string = CString::new(hash.to_string());
-    if hash_string.is_err() {
-        return std::ptr::null_mut();
+    match CString::new(hash.to_string()) {
+        Ok(c_string) => c_string.into_raw(),
+        Err(_) => std::ptr::null_mut(),
     }
-    
-    hash_string.unwrap().into_raw() // Transfer ownership to C side
 }
 
 #[unsafe(no_mangle)]
@@ -73,18 +71,14 @@ pub unsafe extern "C" fn argon2id_free_hash(hash_ptr: *mut c_char) {
 /// Generate a cryptographically secure random salt (Base64 encoded)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn argon2id_generate_salt() -> *mut c_char {
-    use rand::RngCore;
-    use base64::Engine as _;
+    // Use the correct OsRng import
+    let mut rng = rand_core::OsRng;
     
-    // Generate 32 bytes of random data
-    let mut random_bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut random_bytes);
+    // Generate random salt using the recommended method
+    let salt = SaltString::generate(&mut rng);
     
-    // Convert to Base64
-    let base64_salt = base64::engine::general_purpose::STANDARD.encode(&random_bytes);
-    let cstring = CString::new(base64_salt);
-    
-    match cstring {
+    // Convert to CString
+    match CString::new(salt.as_str().to_string()) {
         Ok(cstr) => cstr.into_raw(),
         Err(_) => std::ptr::null_mut(),
     }
@@ -101,27 +95,144 @@ pub unsafe extern "C" fn argon2id_verify(
         return -1; // Error
     }
     
-    let password_result = unsafe { CStr::from_ptr(password) }.to_str();
-    let hash_result = unsafe { CStr::from_ptr(hash) }.to_str();
+    let password_cstr = unsafe { CStr::from_ptr(password) };
+    let hash_cstr = unsafe { CStr::from_ptr(hash) };
     
-    if password_result.is_err() || hash_result.is_err() {
-        return -1; // Error
-    }
+    let password_str = match password_cstr.to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
     
-    let password_str = password_result.unwrap();
-    let hash_str = hash_result.unwrap();
+    let hash_str = match hash_cstr.to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
     
     // Parse the hash
-    let parsed_hash = PasswordHash::new(hash_str);
-    if parsed_hash.is_err() {
-        return -1; // Error
-    }
+    let parsed_hash = match PasswordHash::new(hash_str) {
+        Ok(h) => h,
+        Err(_) => return -1,
+    };
     
     let argon2 = Argon2::default();
-    let verify_result = argon2.verify_password(password_str.as_bytes(), &parsed_hash.unwrap());
-    
+    let verify_result = argon2.verify_password(password_str.as_bytes(), &parsed_hash);
+
     match verify_result {
-        Ok(_) => 1,    // Success
-        Err(_) => 0,   // Invalid password
+        Ok(_) => 1, // Success
+        Err(PasswordHashError::Password) => 0, // Invalid password
+        Err(_) => -1, // Other verification error
+    }
+}
+
+/// cbindgen:ignore
+#[cfg(target_os = "android")]
+pub mod android {
+    use super::*;
+    use jni::JNIEnv;
+    use jni::objects::{JClass, JString};
+    use jni::sys::jstring;
+
+    #[no_mangle]
+    pub unsafe extern "C" fn Java_expo_module_argon2_Argon2id_hash(
+        env: JNIEnv,
+        _class: JClass,
+        password: JString,
+        salt: JString
+    ) -> jstring {
+        // Convert Java strings to Rust strings
+        let password_java = match env.get_string(&password) {
+            Ok(s) => s,
+            Err(_) => return env.new_string("").unwrap().into_inner(),
+        };
+        
+        let salt_java = match env.get_string(&salt) {
+            Ok(s) => s,
+            Err(_) => return env.new_string("").unwrap().into_inner(),
+        };
+
+        // Convert to C-compatible strings
+        let password_cstr = match CString::new(password_java.to_string_lossy().into_owned()) {
+            Ok(s) => s,
+            Err(_) => return env.new_string("").unwrap().into_inner(),
+        };
+        
+        let salt_cstr = match CString::new(salt_java.to_string_lossy().into_owned()) {
+            Ok(s) => s,
+            Err(_) => return env.new_string("").unwrap().into_inner(),
+        };
+
+        // Call the hash function
+        let hash_ptr = argon2id_hash(password_cstr.as_ptr(), salt_cstr.as_ptr());
+        if hash_ptr.is_null() {
+            return env.new_string("").unwrap().into_inner();
+        }
+
+        // Convert result back to Java string
+        let hash_cstr = unsafe { CString::from_raw(hash_ptr) };
+        let hash_str = match hash_cstr.into_string() {
+            Ok(s) => s,
+            Err(_) => return env.new_string("").unwrap().into_inner(),
+        };
+
+        match env.new_string(hash_str) {
+            Ok(jstring) => jstring.into_inner(),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn Java_expo_module_argon2_Argon2id_generateSalt(
+        env: JNIEnv,
+        _class: JClass,
+    ) -> jstring {
+        let salt_ptr = argon2id_generate_salt();
+        if salt_ptr.is_null() {
+            return env.new_string("").unwrap().into_inner();
+        }
+
+        let salt_cstr = unsafe { CString::from_raw(salt_ptr) };
+        let salt_str = match salt_cstr.into_string() {
+            Ok(s) => s,
+            Err(_) => return env.new_string("").unwrap().into_inner(),
+        };
+
+        match env.new_string(salt_str) {
+            Ok(jstring) => jstring.into_inner(),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn Java_expo_module_argon2_Argon2id_verify(
+        env: JNIEnv,
+        _class: JClass,
+        password: JString,
+        hash: JString
+    ) -> jni::sys::jint {
+        // Convert Java strings to Rust strings
+        let password_java = match env.get_string(&password) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        
+        let hash_java = match env.get_string(&hash) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+
+        // Convert to C-compatible strings
+        let password_cstr = match CString::new(password_java.to_string_lossy().into_owned()) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        
+        let hash_cstr = match CString::new(hash_java.to_string_lossy().into_owned()) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+
+        // Call the verify function
+        let result = argon2id_verify(password_cstr.as_ptr(), hash_cstr.as_ptr());
+        result
     }
 }

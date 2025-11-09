@@ -1,5 +1,6 @@
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use argon2::password_hash::{SaltString, PasswordHash, Error as PasswordHashError};
+use rand::rngs::OsRng;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};  
 
@@ -70,14 +71,11 @@ pub unsafe extern "C" fn argon2id_free_hash(hash_ptr: *mut c_char) {
 
 /// Generate a cryptographically secure random salt (Base64 encoded)
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn argon2id_generate_salt() -> *mut c_char {
-    // Use the correct OsRng import
-    let mut rng = rand_core::OsRng;
+pub unsafe extern "C" fn argon2id_generate_salt() -> *mut c_char {    
+    let mut rng = OsRng; // rand::rngs::OsRng
     
-    // Generate random salt using the recommended method
     let salt = SaltString::generate(&mut rng);
     
-    // Convert to CString
     match CString::new(salt.as_str().to_string()) {
         Ok(cstr) => cstr.into_raw(),
         Err(_) => std::ptr::null_mut(),
